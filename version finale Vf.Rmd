@@ -1,0 +1,1280 @@
+---
+title: "House Price"
+author: 'BRUNET Olivier,GUEUKAM Raphaël,KACHKACHI Slim,LEFEVRE Benjamin, '
+subtitle: IASD4
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+header-includes:
+- \usepackage{pifont}
+- \usepackage{manfnt}
+- \usepackage{mdframed}
+- \usepackage{systeme}
+- \usepackage{txfonts}
+- \newcommand{\cH}{\mathcal{H}}
+---
+
+TABLE DES MATIERES
+#1 INTRODUCTION
+#2 ANALYSE EXPLORATOIRE & MODELISATION
+#3 CONSTRUCTION ET VALIDITE DES MODELES
+#4 CHOIX DU MODELE FINAL & COMPARAISON DES RMSE
+#5 DISCUSSION
+
+#ANNEXES
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#1.INTRODUCTION
+
+L’objectif de cette étude est de proposer un modèle de prédiction de prix de vente de maisons (la ‘target’) basé sur quelques 67 critères d’évaluation (cf. détails en annexe 3).
+
+Les prédictions utiliseront des modèles de régression linéaire multiple dont la performance sera évaluée sur la base de la plus petite “RMSE” (‘Root Mean Square Error’). Le jeu de données comprend une partie ‘train’ pour l’élaboration des modèles prédictifs et une partie “test” pour l’évaluation de leurs performances.
+
+Concernant les modèles de prédiction, les approches suivantes sont présentées : 
+1)	Utilisation de toutes les variables ;
+2)	Sélection des variables issue des études de corrélation ‘corrplot’ ;
+3)	Sélection des variables issue du ‘Random Forest’ ;
+4)	Transformation associée à de la sélection de variables. 
+NB : deux autres approches testées sont présentées en annexes.
+
+Concernant l’organisation de ce document, il comprend les parties suivantes :
+-	Analyse exploratoire des données ;
+-	Construction et d’évaluation des modèles ;
+-	Sélection du meilleur modèle ;
+-	Conclusion et de réflexion sur les axes d’amélioration des prédictions. 
+
+
+Pour des raisons de lisibilité, seuls les premiers cas des différentes étapes seront détaillés, le reste étant positionné en annexe.
+
+Enfin, pour assure la comparaison des résultats, le générateur de variables aléatoires est calé sur 2010.
+
+
+```{r ,message=FALSE, warning=FALSE, echo=FALSE}
+library(cowplot)
+library(gclus);library(utils);library(plyr);library(xgboost);library(Metrics)
+library(ggfortify);library(gridExtra);library(stats);library(kableExtra)
+library(MASS); library(knitr);library(ggplot2)
+library(cowplot);library(reshape2);library(dplyr)
+library(GGally);library(corrplot);library(carData) 
+library(car);library(questionr);library(multcomp)
+library(dplyr);library(leaps);library(tinytex);library(latexpdf);
+library(rmarkdown);library(markdown);library(TeachingDemos);library(corrplot)
+library(e1071);
+library(tidyverse);
+library(fitdistrplus);library(lmtest); library(randomForest);library(caret)
+library(funModeling)
+```
+
+```{r}
+set.seed(2010)
+options(warn=-1)
+```
+
+\newpage
+
+#2.ANALYSE EXPLORATOIRE/MODELISATION
+
+Ce paragraphe a pour objectif d'identifier  :
+- La loi de comportement de la 'target' ;
+- Les valeurs intéressantes, "surprenantes", les possibilités de simplification (regroupement de modalités) tout en tenant compte du sens des variables;
+- Les variables explicatives ayant les plus fortes corrélations avec la loi de comportement de la 'target'.
+
+
+##2.1 PRISE EN MAIN DES DONNEES  
+
+```{r}
+# chargement des données
+df_train = read.csv("Train.csv", header=TRUE)
+df_testt = read.csv("Test.csv", header=TRUE)
+df_all <- rbind(df_train,df_testt) #jeu complet utilisé pour l'analyse exploratoire
+```
+
+
+```{r}
+#Quelques vérifications préliminaires (absence de doublon, de valeurs à "NaN" ou "NULL", identification des valeurs avec des taux élevés de zéros etc.) 
+nrow(df_all) - nrow(unique(df_all)) # nbre total de lignes - nbre de lignes apparaissant une seule fois
+any(is.na(df_all))  # présence de na ?
+x=df_status(df_all)$p_zeros #variables avec un % de zéros élevés
+```
+
+##2.2 IDENTIFCATION DE LA LOI DE DISTRIBUTION DE LA TARGET
+```{r}
+#Le graphe de Cullen-Frey semble indiquer une distribution lognormale de la 'target' avec une queue de distribution  à droite et moins aplatie q'une gaussienne
+options(repr.plot.width = 4, repr.plot.height = 4)
+descdist(df_all$SalePrice)
+```
+
+##2.3 ANALYSE DES VARIABLES EXPLICATIVES
+
+Dans cette partie nous mènerons quelques statistiques élémentaires sur des variables afin d'identifier les plus pertinentes, des corrélations, redondances ou points surprenants. 
+
+###2.3.1 VARIABLES NUMERIQUES
+
+Nous présentons la méthode sur un panel réduit d'exemples, compte-tenu du nombre de variables.
+
+```{r}
+#Commençons par "YearBuild" (année de construction) qui présente une linéarité à partir des années 50 et quelques densifications (années 60 et 2000).
+#La superposition avec l'année de révonation YearRemodAdd ne fait pas resortir de corrélation particulière. 
+ggplot(df_all, aes(x = YearBuilt, y =log(SalePrice),color=YearRemodAdd)) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+#A noter que la variable année de construction du garage ("GarageYrBlt") présente un comportement similaire (cf. annexe 5).
+
+```{r}
+#La variable niveau de qualité général ("OverallQual", entier de 9 valeurs) montre également un lien direct linaire avec le prix de vente.
+#A noter un intervalle interquartile du prix plus important pour les niveaux de qualité élevée (rien de suprenant !).  
+par(mfrow=c(1,2))
+ggplot(df_all, aes(x=OverallQual, y=log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+ggplot(data = df_all[!is.na(df_all$SalePrice),], aes(x=factor(OverallQual), y=SalePrice))+
+geom_boxplot(col='blue') + labs(subtitle="Title")  
+```
+
+```{r}
+#La distribution de la surface habitable hors sous-sol ("GrLivArea" en square feet) présente quelques points surprenants (grandes surfaces mais prix de vente bas).
+#On pourra tester un modèle sans cette valeur, car leur suppression (valeurs > 4500) "linéairise"  quelque peu la courbe.
+par(mfrow=c(1,2))
+ggplot(df_all,aes(x = GrLivArea, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+ggplot(subset(df_all, GrLivArea < 4000) ,aes(x = GrLivArea, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+Dans la même optique, d'autres variables présentent également des points surprenants (cf. annexe 6) : 
+- Surface totale du garage ("GarageArea") pour les valeurs au-delà de 1500 (prix anormalement bas par rapport à la médiane) ; 
+- Surface du RdC ("1st Floor") présente un point surprenant au-delà de 4000 (en dessous de la valeur médiane
+- Surface totale du sous-sol ("TotalBsmtSF") avec un point extrême au-delà de 6000 sqf).
+
+
+###2.3.2 VARIABLES QUALITATIVES
+
+On s'intéressera à certaines variables dans la perspective d'un "feature engineering".
+
+```{r}
+par(mfrow=c(1,2))
+#La variable "Neighborhood" (noms des quartiers de la ville) présente 25 modalités avec ce qui semble être quelques paliers.
+#Il pourra être intéressant d'en regrouper quelques uns.
+plot(sort(tapply(log(df_all$SalePrice),df_all$Neighborhood,median)))
+
+#Des regroupements des modalités de la variables "SaleConditions semblent également possibles (valeurs médianes proches pour des conditions de vente similaires).
+#Regroupement de "Adnorml" avec "alloca" et Family"AdjLand" afin de n'avoir que 4 modalités 
+ggplot(df_all) +geom_boxplot(aes(x = SaleCondition, y = log(SalePrice))) +  geom_jitter(aes(x =SaleCondition, y =log(SalePrice)),col = "red", alpha = 0.2  )
+```
+
+```{r}
+ggplot(df_all) +geom_boxplot(aes(x = SaleCondition, y = log(SalePrice))) +  geom_jitter(aes(x =SaleCondition, y =log(SalePrice)),col = "red", alpha = 0.2  )
+```
+
+La même approche est envisageable pour les variables "BsmtFinType1" (qualité du sous-sol pour l'aménagement en pièce à vivre) et "GarageFinish" ((cf. annexe 7).
+
+Enfin, il est à noter que certaines variables (exemple "ConditionS"; lite en annexe 3) présentent des modalités différentes entre les deux jeux, ce qui pourra présenter des difficultés pour les prédictions.On veillera à les retirer (Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical).
+
+###2.3 FEATURE ENGINEERING / TRAVAIL SUR LE REGROUPEMENT DE VARIABLES
+  
+```{r}
+#On s'intéresse à l'impact du regroupement des variables de surfaces ("GrLivArea", "TotalBsmtSF"); détail en annexe 4) sur le niveau de corrélation avec le log de la 'target'
+#Il sera intéressant les effets de ces regroupements sur la qualité des prédictions.  
+cor(df_all$SalePrice, df_all$GrLivArea, use= "pairwise.complete.obs")
+cor(df_all$SalePrice, df_all$TotalBsmtSF, use= "pairwise.complete.obs")
+cor(df_all$SalePrice, df_all$GrLivArea + df_all$TotalBsmtSF, use= "pairwise.complete.obs")
+```
+
+##2.4 ANALYSE DES CORRELATIONS
+
+```{r}
+#Cherchons les variables quantitatives avec une valeur de corrélation absolue > 0,3 
+#NB :un essai avec un indice de corrélation plus bas à 0,1 donne la même liste de variable.
+#Cette liste de variables numériques sera retenue pour un des modèles
+numericVars <- which(sapply(df_all, is.numeric));  # index des vecteurs de variables numériques
+numericVarNames <- names(numericVars) 
+all_numVar <- df_all[, numericVars] # nombre length(numericVars)
+cor_numVar <- cor(all_numVar, use="pairwise.complete.obs")  # correlations de toutes les variables numériques
+options(repr.plot.width = 22, repr.plot.height = 11)
+cor_sorted <- as.matrix(sort(cor_numVar[,'SalePrice'], decreasing = TRUE)) # classement par ordre décroissant des corrélations avec la target
+CorHigh <- names(which(apply(cor_sorted, 1, function(x) (x > 0.3 | x < -0.3)))) # filtre pour ne garder que les corrélations supérieurs en val. abs. à 0.3
+cor_numVar <- cor_numVar[CorHigh, CorHigh]
+corrplot.mixed(cor_numVar, tl.col="black", tl.pos = "lt")# affichage du graphe
+```
+
+
+#3. MODELISATION
+
+Dans cette partie nous allons successivement tester plusieurs modèles et vérifier les hypothèses suivantes :   
+    - [P1] : Erreurs sont centrées/le modèle est linéaire..
+    - [P2] : Erreurs ont une variance homoscédastique.
+    - [P3] : Erreurs sont non corrélées.
+    - [P4] : Erreurs sont gaussiennes.
+
+... tout cherchant à diminuer la RMSE sur les jeux 'train' & 'test.
+
+##3.1. MODELE DE BASE (REGRESSION LINEAIRE A PARTIR DE TOUTES LES VARIABLES)
+
+```{r}
+#Etape 1 : Dans la prise en main des données, nous avions identifié quelques variables à retirer (modalités différentes entre les jeux)
+train = subset(df_train, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+testt = subset(df_testt, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+```
+
+```{r}
+#Etape 2 : définition du 1er modèle  réduit à l'intercept
+model_base = lm(log(train$SalePrice)~., data=train)
+summary(model_base) 
+```
+
+
+```{r}
+# Etape 3: identification et suppression des outliers
+outlierTest(model_base)
+```
+
+```{r}
+# Retrait de ces outliers
+train_b = train[-c(720,819,743,661,814,1079),]
+# Et des points anormaux identifiés lors de l'analyse exploratoire
+train_b = subset(train_b, GrLivArea < 4000);train_b = subset(train_b, GarageArea < 1250);train_b = subset(train_b, TotalBsmtSF < 4000);train_b = subset(train_b, X1stFlrSF < 4500);train = subset(train_b, MasVnrArea < 1000)
+```
+
+```{r}
+#Etape 4 : nouveau modèle sans les outliers et points extrêmes
+model_baseb = lm(log(SalePrice)~., data=train_b)
+outlierTest(model_baseb)
+```
+
+```{r}
+#Etape 5 : retrait d'un 2ieme série d'outliers identifiés
+train_c = train_b[-c(359,1002,794,792,749,3,994),]
+model_basec = lm(log(SalePrice)~., data=train_c)
+```
+
+```{r}
+#Etape 6 : comparaison des AIC
+AIC=c(extractAIC(model_base)[2],extractAIC(model_baseb)[2],extractAIC(model_basec)[2])
+names(AIC)=c('modèle_base','model_base_sans_outliers1','model_base_sans_outliers2')
+AIC
+```
+
+
+### Analyse de validité du modèle retenu (modèle de base issu de la 1ère série d'outliers retirés)
+
+[P1] est validée (cf. 1er plot Residuals vs Fitted) les résidus étant globalement répartis des deux côtés du zéro et ligne rouge approximativement horizontale à zéro;
+[P2] semble validée (cf. 3ème plot Scale-Location), pour autant le test de Breush-Pagan donne un p-value <0,05 ((10^-11)
+[P3] est validée car tous les traits verticaux (cf. ci-dessous "Plot Auto-corrélation) et ne dépassent pas les seuils en pointillés (à l'exception du premier);
+[P4] est difficile à valider sur la base du 2ème plot Normal Q-Q car les points sont presque tous alignés autour de la première bissectrice; le test de Shapiro invalide l'hypothèse P4 car p-value <0,05 (10^-14)
+
+```{r}
+par(mfrow=c(2,2))
+plot(model_baseb)
+```
+
+```{r}
+ncvTest(model_baseb)
+```
+
+```{r}
+acf(residuals(model_baseb), main="Plot Auto-corrélation")
+```
+
+```{r}
+#le test de Shapiro est négatif (p-value < 0,05)
+shapiro.test(residuals(model_baseb))
+```
+
+###Calcul du RMSE
+```{r}
+# calcul des prédictions pour le train & le test
+y_train_pred = (predict(model_baseb, newdata=train_b))
+y_testt_pred = (predict(model_baseb, newdata=testt))
+# calcul des RMSE: l'exponentielle est appliqué pour annuler le log
+RMSE_train = c(sqrt(mean((exp(y_train_pred)-train_b$SalePrice)^2)))
+RMSE_testt = c(sqrt(mean((exp(y_testt_pred)-testt$SalePrice)^2)))
+# affichage
+print("RMSE sur le dataset de train:"); print(RMSE_train, digits=5)
+print("RMSE sur le dataset de test:"); print(RMSE_testt, digits=5)
+```
+
+##3.2.Modèle construit à partir des variables sélectionnées par le corrplot
+
+Pour alléger la présentation, seule la sélection de données, l'analyse de validité et RSME sont résumés dans ce chapitre (les étapes sont détaillées en annexe n°8).
+
+```{r}
+#Etape 0 : retrait des variables dont les modalités sont différentes entre les deux jeux
+train_c = subset(df_train, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+testt_c = subset(df_testt, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+
+#Etape 1 : sélection des données avec une corrélation supérieure à 0.3 (plot de corrélation corrplot)
+train_cor = (subset(train_c, select=c(OverallQual,GrLivArea,GarageCars,TotalBsmtSF,FullBath,YearBuilt,YearRemodAdd,MasVnrArea,BsmtFinSF1,WoodDeckSF,OpenPorchSF,SalePrice)))
+test_cor = (subset(testt_c, select=c(OverallQual,GrLivArea,GarageCars,TotalBsmtSF,FullBath,YearBuilt,YearRemodAdd,MasVnrArea,BsmtFinSF1,WoodDeckSF,OpenPorchSF,SalePrice)))
+
+```
+
+```{r}
+#Etape 2: construction du modèle
+model_cor = lm(log(SalePrice)~., data=train_cor)
+```
+```{r}
+# visualisation des outliers issus du test de Bonferonni
+outlierTest(model_cor)
+```
+
+
+```{r}
+#Etape 3 :  Retrait de ces outliers (cf. annexe n°8 pour l'identification de ces outliers)
+train_corb = train_cor[-c(720,819,743,585),]
+# Retrait des points anormaux identifiés lors de l'analyse exploratoire
+train_corb = subset(train_corb, GrLivArea < 4000)
+#train_corb = subset(train_corb, GarageArea < 1250)
+train_corb = subset(train_corb, TotalBsmtSF < 4000)
+#train_corb = subset(train_corb, X1stFlrSF < 4500)
+train_corb = subset(train_corb, MasVnrArea < 1000)
+#nouveau modèle sans les outliers
+model_corb = lm(log(SalePrice)~., data=train_corb)
+```
+
+
+Comparaison des AIC afin de choisir le modèle qui sera étudié plus en avant
+```{r}
+AIC=c(extractAIC(model_cor)[2],extractAIC(model_corb)[2])
+names(AIC)=c('modèle_cor_base','model_cor_sans_outliers1')
+AIC
+```
+
+Analyse de validité du modèle retenu (modèle sur la base des variables sélectionnées par le corrplot)
+
+[P1] est validée (cf. 1er plot Residuals vs Fitted) (résidus globalement uniformément répartis des deux côtés de 0, igne rouge approximativement horizontale à zéro)
+[P2] n'est pas validée car (cf. 3ème plot Scale-Location), le test de Breush-Pagan donne encore un p-value <0,05 (10^-6)
+[P3] est validée car tous les traits verticaux (cf. ci-dessous "Plot Auto-corrélation), sauf le premier, ne dépassent pas les seuils en pointillés.
+[P4] est difficile à valider (cf 2ème plot Normal Q-Q) car les points sont presque tous alignés autour de la première bissectrice  → test de Shapiro pour décider (10^-15).
+
+
+Calcul du RMSE du modèle issu des variables sélectionnées par le corrplot
+```{r}
+# calcul des prédictions pour le train & le test
+y_train_predcor = (predict(model_corb, newdata=train_corb))
+y_testt_predcor = (predict(model_corb, newdata=testt))
+# calcul des RMSE: l'exponentielle est appliqué pour annuler le log
+RMSE_traincor = c(sqrt(mean((exp(y_train_predcor)-train_corb$SalePrice)^2)))
+RMSE_testtcor = c(sqrt(mean((exp(y_testt_predcor)-testt$SalePrice)^2)))
+# affichage
+print("RMSE sur le dataset de train:"); print(RMSE_traincor, digits=5)
+print("RMSE sur le dataset de test:"); print(RMSE_testtcor, digits=5)
+```
+
+
+##3.3 Modèle construit à partir des variables sélectionnées par le Random Forest
+
+Pour alléger la présentation, seule la sélection de données, l'analyse de validité et RSME sont résumés dans ce chapitre (les étapes sont détaillées en annexe n°9).
+
+
+```{r}
+options(repr.plot.width = 10, repr.plot.height = 6)
+#Etape 1 identification des variables de plus haute importance 
+rf = randomForest(SalePrice~ .,data=train)
+varImpPlot(rf)
+#en annexe n°9 #rf$importance[order(rf$importance[, 1], decreasing = TRUE), ] 
+```
+
+```{r}
+#retrait des variables dont les modalités sont différentes entre les deux jeux
+train_f = subset(df_train, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+testt_f = subset(df_testt, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+```
+
+```{r}
+#Etape 2 : sélection des variables identifiées par le RandomForest (sans les variables fortement corrélées à d'autres)
+train_rf = (subset(train_f,select=c(OverallQual,GrLivArea,Neighborhood,GarageCars,ExterQual,TotalBsmtSF,GarageArea,BsmtFinSF1,KitchenQual,YearBuilt,BsmtQual,LotArea,FullBath ,YearRemodAdd,LotFrontage,BsmtUnfSF,MasVnrArea,Fireplaces,OpenPorchSF,BsmtFinType1,WoodDeckSF,OverallCond,PoolArea,SaleCondition,BsmtExposure,MoSold,SalePrice)))
+test_rf = (subset(testt_f,select=c(OverallQual,GrLivArea,Neighborhood,GarageCars,ExterQual,TotalBsmtSF,GarageArea,BsmtFinSF1,KitchenQual,YearBuilt,BsmtQual,LotArea,FullBath ,YearRemodAdd,LotFrontage,BsmtUnfSF,MasVnrArea,Fireplaces,OpenPorchSF,BsmtFinType1,WoodDeckSF,OverallCond,PoolArea,SaleCondition,BsmtExposure,MoSold,SalePrice)))
+```
+
+```{r}
+#Etape 3 : construction du modèle
+model_rf = lm(log(train_rf$SalePrice)~., data=train_rf)
+
+# Etape 4/ Retrait de ces outliers (cf. annexe n°9 pour l'identification de ces outliers)
+train_rfb = train_rf[-c(720,819,743,661,1079,814,404),]
+
+# Retrait des points anormaux identifiés lors de l'analyse exploratoire
+train_rfb = subset(train_rfb, GrLivArea < 4000)
+train_rfb = subset(train_rfb, GarageArea < 1250)
+train_rfb = subset(train_rfb, TotalBsmtSF < 4000)
+#train_rfb = subset(train_rfb, X1stFlrSF < 4500)
+train_rfb = subset(train_rfb, MasVnrArea < 1000)
+
+#Etape 5 nouveau modèle sans les outliers 
+model_rfb = lm(log(SalePrice)~., data=train_rfb)
+
+#Etape 6 : 2ieme série de  retrait des  outliers
+train_rfc = train_rfb[-c(794,749),]
+model_rfc = lm(log(SalePrice)~., data=train_rfc)
+```
+
+###Comparaison des AIC afin de choisir le modèle qui sera étudié plus en avant
+```{r}
+AIC=c(extractAIC(model_rf)[2],extractAIC(model_rfb)[2],extractAIC(model_rfc)[2])
+names(AIC)=c('modèle_RFbase','model_RF_sans_outliers1','model_RF_sans_outliers2')
+AIC
+```
+
+###Analyse de validité du modèle retenu (modèle sur la base des variables sélectionnées par le RF) (cf. annexe n°9)
+
+[P1] est validée (cf. 1er plot Residuals vs Fitted) (résidus globalement uniformément répartis des deux côtés de 0, ligne rouge approximativement horizontale à zéro)
+[P2] n'est pas validée car (cf. 3ème plot Scale-Location), le test de Breush-Pagan donne un p-value <0,05 (même si la P value est mauvaise que celle du modèle de base sans outliers)
+[P3] est validée car tous les traits verticaux (cf. ci-dessous "Plot Auto-corrélation), sauf le premier, ne dépassent pas les seuils en pointillés.
+[P4] est difficile à valider (cf 2ème plot Normal Q-Q) car les points sont presque tous alignés autour de la première bissectrice  → test de Shapiro pour décider.
+
+Calcul du RMSE modèle issu du Random Forest
+```{r}
+# calcul des prédictions pour le train & le test
+y_train_predRF = (predict(model_rfb, newdata=train_rfb))
+y_testt_predRF = (predict(model_rfb, newdata=testt))
+# calcul des RMSE: l'exponentielle est appliqué pour annuler le log
+RMSE_trainRF = c(sqrt(mean((exp(y_train_predRF)-train_rfb$SalePrice)^2)))
+RMSE_testtRF = c(sqrt(mean((exp(y_testt_predRF)-testt$SalePrice)^2)))
+# affichage
+print("RMSE sur le dataset de train:"); print(RMSE_trainRF, digits=5)
+print("RMSE sur le dataset de test:"); print(RMSE_testtRF, digits=5)
+```
+
+
+##3.4. Recherche d'une approche "Feature engineering" en modifiant les modalités de quelques variables qualitatives
+
+###3.4.1 Analyse plus poussée de la variable qualitative la plus importante selon le random forest : Neighboorhood.
+
+Regardons la fréquence (nombre de maisons) pour chaque mode de voisinage:
+Puis comparons les médianes du SalePrice pour chaque modalité de Neighorhood. Le label en bas reprend la fréquence visualisée juste avant:
+
+```{r}
+par(mfrow=c(2,2))
+options(repr.plot.width = 22, repr.plot.height = 6)
+ggplot(data=df_train, aes(x=Neighborhood)) +
+        geom_histogram(stat='count')+
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=3)+
+        theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(df_train[!is.na(df_train$SalePrice),], aes(x=Neighborhood, y=SalePrice)) +
+        geom_bar(stat='summary', fun.y = "median", fill='blue') +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+        scale_y_continuous(breaks= seq(0, 800000, by=50000)) +
+        geom_label(stat = "count", aes(label = ..count.., y = ..count..), size=3) +
+        geom_hline(yintercept=163000, linetype="dashed", color = "red")
+```
+
+De manière analogue au modèle 1 reprenons le jeu de données du départ auquel nous enlevons les outliers, les variables fortement corrélées ont générées un bug lors du predict...
+
+
+```{r}
+#Rassemblons les modes de cette variable ‘Neighboorhood’ en 3 valeurs ordinales :
+# La variable Neighborhood qui a une forte corrélation avec la target -> rassemblons les modes en 3 valeurs ordinales:
+train_var = subset(df_train, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+test_var = subset(df_testt, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+train_var$NeighRich[train_var$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+test_var$NeighRich[test_var$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+train_var$NeighRich[!train_var$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+test_var$NeighRich[!test_var$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+train_var$NeighRich[train_var$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+test_var$NeighRich[test_var$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+train_var = (subset(train_var, select=-c(Neighborhood)))
+test_var = (subset(test_var, select=-c(Neighborhood)))
+```
+
+###3.4.2 Travail sur les variables de surface
+
+Lors de la prise en main des données, nous avions constaté que certaines variables de surfaces avaient une corrélation supérieure une fois rassemblées.
+```{r}
+# creation de la nouvelle variable
+train_var$Area <- train_var$GrLivArea + train_var$TotalBsmtSF
+test_var$Area <- test_var$GrLivArea + test_var$TotalBsmtSF
+# suppression des anciennes
+train_var = (subset(train_var, select=-c(GrLivArea, TotalBsmtSF)))
+test_var = (subset(test_var, select=-c(GrLivArea, TotalBsmtSF)))
+```
+
+###3.4.3 Construction d'un nouveau modèle et analyse de validité
+
+```{r}
+# Etape1 : modèle avec les deux variables modifiées 
+model_var = lm(log(SalePrice)~., data=train_var)
+
+# Etape 2: retrait des outliers (cf. annexe 3 pour l'identification de ces outliers)
+train_varb=train_var[-c(720,819,743,814,1079),]
+
+# outliers mis en évidence lors de l'analyse
+train_varb = subset(train_varb, GarageArea < 1250)
+train_varb = subset(train_varb, MasVnrArea < 1000)
+train_varb = subset(train_varb, X1stFlrSF < 4500)
+
+# Etape 3 : nouveau modèle avec les deux variables modifiées sans les outliers 
+model_varb = lm(log(SalePrice)~., data=train_varb)
+
+# Etape 4 : 2ieme série de retrait des outliers 
+train_varc=train_varb[-c(359,749,1002,794,792,661),]
+
+#Etape 5 : nouveau modèle sans la 2ieme série d'outliers
+model_varc = lm(log(SalePrice)~., data=train_varc)
+```
+
+###Comparaison des AIC afin de choisir le modèle qui sera étudié plus en avant
+```{r}
+AIC=c(extractAIC(model_var)[2],extractAIC(model_varb)[2],extractAIC(model_varc)[2])
+names(AIC)=c('modèle_var_base','model_var_sans_outliers1','model_var_sans_outliers2')
+AIC
+```
+
+###Analyse de validité du modèle de base sans outlier avec quelques variables retravaillées (cf annexe n°10)
+
+[P1] semble être validée (cf. 1er plot Residuals vs Fitted): les résidus restent globalement uniformément répartis des deux côtés de 0, la ligne rouge est approximativement horizontale à zéro
+[P2] n'est  clairement pas validée car (cf. 3ème plot Scale-Location), le test de Breush-Pagan donne un p-value <0,05
+[P3] est validée car tous les traits verticaux (cf. ci-dessous "Plot Auto-corrélation), sauf le premier, ne dépassent pas les seuils en pointillés.
+[P4] est difficile à valider (cf 2ème plot Normal Q-Q) car les points sont presque tous alignés autour de la première bissectrice  → test de Shapiro pour décider.
+
+
+###Calcul du RMSE du modèle issu des variables modifiées
+```{r}
+# calcul des prédictions pour le train & le test
+y_train_predvar = (predict(model_varc, newdata=train_varc))
+y_testt_predvar = (predict(model_varc, newdata=test_var))
+# calcul des RMSE: l'exponentielle est appliqué pour annuler le log
+RMSE_trainvar = c(sqrt(mean((exp(y_train_predvar)-train_varc$SalePrice)^2)))
+RMSE_testtvar = c(sqrt(mean((exp(y_testt_predvar)-test_var$SalePrice)^2)))
+# affichage
+print("RMSE sur le dataset de train:"); print(RMSE_trainvar, digits=5)
+print("RMSE sur le dataset de test:"); print(RMSE_testtvar, digits=5)
+```
+
+#4 CHOIX DU MODELE FINAL / COMPARAISON DU RMSE
+
+Rappel des approches:
+- n°1. pas de sélection des features (essais avec ou sans suppression des outliers)
+- n°2. sélection de features fortement corrélées à la target (corrplot) (essais avec ou sans suppressions des outliers)
+- n°3. sélection de features fortement corrélées à la target sur la base du Random Forest(essais avec ou sans suppression des outliers)
+- n°4. adpatation du cas n°1 en travaillant quelques données quantitatives avec suppression des outliers
+
+##4.1 COMPARAISON DES RMSE
+```{r}
+# taille de la figure
+options(repr.plot.width = 5, repr.plot.height = 3)
+# recapitulatif des différentes RMSE pour chaque modèle dans un dataframe
+resultats = data.frame(train_test=c("train", "train", "train", "train","test", "test", "test", "test"),
+                model=c("1.all feat.", "2.Corr.", "3.RF", "4.Modif Var",
+                        "1.all feat.", "2.Corr.", "3.RF","4. Modif Var"),
+                rmse=c(15897, 24560, 18175, 16828, 21579, 27370, 21672, 21574))
+# barplot regroupé par modèle
+ggplot(data=resultats, aes(x=model, y=rmse, fill=train_test)) +
+geom_bar(stat="identity", color="black", position=position_dodge()) + theme_minimal()
+```
+
+##4.2 CHOIX DU MODELE FINAL
+Les modèles avec outliers n'ont pas été présentés car ne présentant pas d'intérêt.
+Pour les autres, les meilleures valeurs de RMSE tournent autour de 22 000 (USD) à comparer aux 180 k$ en moyenne (soit ~12% du prix moyen soit une marge de +/- 6%).
+On constate que la RMSE de test est toujours légérement supérieure à celle de train (on en déduit que les modèles "n'overfit pas", qu'ils peuvent être utilisés sur d'autres jeux de données)
+...ce qui est plutot encourangeant.
+
+En revanche, le travail sur la transformation des variables "Neighborhood", "AGrLivArea", "TotalBsmtSF" n'a pas apporté de gain significatif.
+
+D'autres essais ont été réalisés en utilisant les méthodes pas à pas (Méthode "backward" .../cf. annexes) mais sans donner une meilleure prédiction.
+
+On a également constaté avec plusieurs modèles prédictifs, que la réduction du nombre de variables dégradait de façon significative la qualité de la prédiction (c'est particulièrement notable avec la sélection issue du corrplot).
+
+En définitive, la meilleure prédiction est issue du modèle sans sélection de variable sans outlier (y compris pour le test de variance homoscédastique).
+
+#5 DISCUSSION
+
+Le premier constat est que le choix des méthodes utilisées n'a pas été déterminante pour la qualité de la prédiction. La suppression des outliers s'est avérée en revanche bénéfique. 
+Le travail sur les variables qualitatives (feature engineering) n'a pas non plus apporté de progrès significatif; sans doute l'a-t-on appliqué à un panel trop réduit?
+
+Les pistes pour améliorer les modèles prédictifs pourraient être :
+- Poursuivre la "création de features" (regroupement de variables, réduction de modalités, appliucation de fonctions aux valeurs numériques (carré..)
+- Essayer d'autres modèles notamment ceux de type "ensemblistes" sur la base d'arbre comme le randomforest, moins sensibles aux valeurs aberrantes.
+
+
+\newpage
+
+#ANNEXES
+
+1.  Décompte des variables numériques avec des taux élevés de zéros
+2.  Autre méthode pour déterminer la loi de comportement de la 'target'
+3.  Variable qualitatives dont les modalités sont différentes entre les jeux train et test
+4.  Illustration de l'amélioration du taux de  corrélation  en regroupant les variables quantitatives de surfaces
+5.  Distribution des variables "GarageYrBlt" (année de construction du garage) et "GarageCars" nombre de places de parking)        rapport à la Target
+6.  Distribution des variables "GarageArea" (surface du garage), "1st Floor" (surface du RdC)  et "TotalBsmtSF" (surface             totale du sous-sol) par rapport à la Target
+7.  Distribution de la variable "BsmtFinType1" (qualité du sous-sol pour l'aménagement en pièce à vivre) et "GarageFinish"         ("état de finition intérieur du garage).
+8.  Etude de validé du modèle issu de selection des variables par le Corrplot
+9.  Etude de validé du modèle issu de selection des variables par le Random Forest
+10. Etude de validé du modèle issu des transformation des variables "Neighborhood", "AGrLivArea" et "TotalBsmtSF"
+11. Modéle sans sélection, sans outliers mais normalisé
+12. Modèle mixant modification de variables et sélection en utilisant les p-values de la synthèse du modèle de régression         linéairessu d'une
+13. Description des différentes variables prédictives
+
+
+###Annexe 1 décompte des variables numériques avec des zéros
+```{r}
+x=df_status(df_all)$p_zeros
+```
+
+###Annexe 2 Loi de comportement de la Target
+```{r}
+#Deuxième méthode pour vérifier la distribution log normale de la target
+par(mfrow=c(1,2))
+options(repr.plot.width = 2, repr.plot.height = 2)
+ggplot(data = df_all[!is.na(df_all$SalePrice),], aes(x=SalePrice)) +
+        geom_histogram(bins=100, fill="blue", aes(y = ..density..)) +
+        geom_density() + labs(subtitle="Distribution de la target non modifiée")
+ggplot(data=df_all[!is.na(df_all$SalePrice),], aes(x=log(SalePrice))) +
+        geom_histogram(bins=100, fill="blue", aes(y = ..density..)) +
+        geom_density() + labs(subtitle="Distribution du log de la target")
+qqnorm(log(df_all$SalePrice))
+```
+
+###Annexe 3 Variables qualitatives dont les modalités sont différentes entre les deux jeux
+
+Exterior1st" et  "Exterior2nd" (type de matériaux sur les murs, 1ier et  2ieme matériaux),"RoofMatl" (matériaux de la toiture), "Heating" (type de chauffage), "Electrical" (information sur le système électrique), "ConditionS" (proximité aux facilités dans le cas de plus d'une facilité)
+
+Illustration sur la variable "RoofMatl"
+```{r}
+table(df_train$RoofMatl)
+table(df_testt$RoofMatl)
+```
+
+###Annexe 4 Illustration de l'amélioration du taux de  corrélation  en regroupant les variables quantitatives de surfaces
+Cette partie démontre que la totalité des surfaces ont une plus grande influence sur le prix. Néanmoins, ici nous n'avons pas à créer une nouvelle feature avec la somme des différentes surfaces car c'est implicitement fait par la régression linéaire (qui fait toute sorte de combinaison linéaire)
+```{r}
+# taille des figures
+options(repr.plot.width = 5, repr.plot.height = 3)
+
+ggplot(data=df_all[!is.na(df_all$SalePrice),], aes(x=(df_all$GrLivArea + df_all$TotalBsmtSF), y=SalePrice))+
+        geom_point(col='blue') + geom_smooth(method = "lm", se=FALSE, color="black", aes(group=1)) +
+        scale_y_continuous(breaks= seq(0, 800000, by=100000))
+```
+
+
+###Annexe 5 Distribution des variables "GarageYrBlt" (année de construction du garage) et "GarageCars" nombre de places de parking) rapport à la Target
+```{r}
+#Distribution linéaire de l'année de construction du garage par rapport au log de la 'target' à partir des année 50
+ggplot(df_all, aes(x = GarageYrBlt, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+```{r}
+#distribution linéaire du nombre de places de parking par rapport au log de la target même s'il existe quelques points surprenants
+ggplot(df_all,aes(x = GarageCars, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+###Annexe 6 Distribution des variables "GarageArea" (surface du garage), "1st Floor" (surface du RdC)  et "TotalBsmtSF" (surface totale du sous-sol) par rapport à la Target
+
+```{r}
+#De façon analogue on peut retirer quelques points pour les surface garage au-delà de 1500 sq feet avec des prix anormalement bas.
+ggplot(df_all,aes(x = GarageArea, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+```{r}
+#Ici on retrouve clairement un point qui sort du lot : la surface de "1st Floor" au dela de 4000 sq. feet.
+#Sans ce point la modélisation tend plus vers une droite: il serait intéressant de retirer ce  point extreme car le prix est également très bas.
+ggplot(df_all,aes(x = X1stFlrSF, y =log(SalePrice))) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+```{r}
+#Meme chose pour le basement (sous-sol) : un point extrême se dégage, il s'agit de point très excentré par rapport à l'ensemble des valeurs
+ggplot(df_all,aes(x = TotalBsmtSF, y =log(SalePrice),color=X1stFlrSF)) + geom_point()+geom_smooth()+geom_density2d(color = "red")
+```
+
+###Annexe 7 Distribution de la variable "BsmtFinType1" (qualité du sous-sol pour l'aménagement en pièce à vivre) et "GarageFinish" ("état de finition intérieur du garage).
+
+```{r}
+#des modalités que l'on peut regrouper: toutes sauf GLQ (Good Level Quarter) ce qui a un sens car ttes les autres correspondent à des niv de qualité inférieure
+ggplot(df_all) +
+  geom_boxplot(aes(x = BsmtFinType1, y = log(SalePrice)))+
+  geom_jitter(
+    aes(x = BsmtFinType1, y = log(SalePrice)),
+    col = "red", alpha = 0.2
+  )
+```
+
+```{r}
+#3 modalités dont deux ont des valeurs médianes très proches/ on doit pouvoir regrouper Fin et RFn
+ggplot(df_all) +
+  geom_boxplot(aes(x = GarageFinish, y = log(SalePrice)))+
+  geom_jitter(
+    aes(x = GarageFinish, y = log(SalePrice)),
+    col = "red", alpha = 0.2
+  )
+```
+
+###Annexe 8 étude de validé du modèle issu de selection des variables par le corrplot
+
+###A8 visualisation des outliers issus du test de Bonferonni
+```{r}
+outlierTest(model_cor)
+```
+
+```{r}
+# Retrait de ces outliers
+train_corb = train_cor[-c(720,819,743,585),]
+# Retrait des points anormaux identifiés lors de l'analyse exploratoire
+train_corb = subset(train_corb, GrLivArea < 4000)
+#train_corb = subset(train_corb, GarageArea < 1250)
+train_corb = subset(train_corb, TotalBsmtSF < 4000)
+#subset(train_corb, X1stFlrSF < 4500)
+train_corb = subset(train_corb, MasVnrArea < 1000)
+```
+
+```{r}
+#nouveau modèle sans les outliers
+model_corb = lm(log(SalePrice)~., data=train_corb)
+```
+
+###A8 Comparaison des AIC afin de choisir le modèle qui sera étudié plus en avant
+```{r}
+AIC=c(extractAIC(model_cor)[2],extractAIC(model_corb)[2])
+names(AIC)=c('modèle_cor_base','model_cor_sans_outliers1')
+AIC
+```
+
+####A8 Analyse de validité du modèle retenu (modèle sur la base des variables sélectionnées par le corrplot)
+
+####modèle de référence
+```{r}
+ncvTest(model_cor)
+```
+
+```{r}
+acf(residuals(model_cor), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_cor))
+```
+
+
+####modèle sans la 1iere série d'outliers
+```{r}
+ncvTest(model_corb)
+```
+
+```{r}
+acf(residuals(model_corb), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_corb))
+```
+
+
+###Annexe 9 Etude de validé du modèle issu de selection des variables par le Random Forest
+
+###A9 Liste des variables par ordre d'importance
+```{r}
+#liste des variables par ordre d'importance décroissant
+rf$importance[order(rf$importance[, 1], decreasing = TRUE), ] 
+```
+
+####Analyse de validée du modèle de référence
+```{r}
+ncvTest(model_rf)
+```
+
+```{r}
+acf(residuals(model_rf), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_rf))
+```
+
+####A9 Visualisation des outliers issus du test de Bonferonni
+```{r}
+#1ier retrait 
+outlierTest(model_rf)
+```
+
+```{r}
+# 2ieme retrait des outliers
+outlierTest(model_rfb)
+```
+
+####A9 Analyse de validité du modèle issu de la sélection des variables par le RandomForest et sans les outliers
+```{r}
+plot(model_rfb)
+```
+
+```{r}
+ncvTest(model_rfb)
+```
+
+```{r}
+acf(residuals(model_rfb), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_rfb))
+```
+
+####Anayse du modèle sans la 2ieme série d'outliers
+```{r}
+ncvTest(model_rfc)
+```
+
+```{r}
+acf(residuals(model_rfc), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_rfc))
+```
+
+###Annexe 10 Etude de validé du modèle issu des transformation des variables "Neighborhood", "AGrLivArea" et "TotalBsmtSF"
+
+
+```{r}
+ncvTest(model_var)
+```
+
+```{r}
+acf(residuals(model_var), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_var))
+```
+
+
+```{r}
+# visualisation des outliers issus du test de Bonferonni
+outlierTest(model_var)
+```
+
+```{r}
+# visualisation des outliers résiduels (2ieme série)
+outlierTest(model_varb)
+```
+
+```{r}
+#Evaluation du modèle avec la 1iere série d'outliers retirée
+plot(model_varb)
+```
+
+```{r}
+ncvTest(model_varb)
+```
+
+```{r}
+acf(residuals(model_varb), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_varb))
+```
+
+```{r}
+#Evaluation du modèle avec le retrait de la 2ieme sértie d'outliers
+plot(model_varc)
+```
+
+```{r}
+ncvTest(model_varc)
+```
+
+```{r}
+acf(residuals(model_varc), main="Plot Auto-corrélation")
+```
+
+```{r}
+shapiro.test(residuals(model_varc))
+```
+
+
+####Annexe 11 : Essai d'un modéle sans sélection, sans outliers mais normalisé
+  
+
+####A11 étape 1 : fusion des jeux de données  train & test et préparation des données
+```{r}
+train_an = subset(df_train, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+testt_an = subset(df_testt, select=-c(Condition2, RoofMatl, Exterior1st, Exterior2nd, Heating, Electrical))
+
+# outliers issue de bonferonni
+train_an = train_an[-c(720,819,743,661,814),]
+testt_an = testt_an[-c(720,819,743,661,814),]
+
+# outliers mis en évidence lors de l'analyse
+train_an = subset(train_an, GrLivArea < 4000)
+train_an = subset(train_an, GarageArea < 1250)
+train_an = subset(train_an, TotalBsmtSF < 4000)
+train_an = subset(train_an, MasVnrArea < 1000)
+train_an = subset(train_an, TotalBsmtSF < 4000)
+train_an = subset(train_an, X1stFlrSF < 4500)
+
+all_tmp <- rbind(train_an, testt_an)
+dim(all_tmp)
+```
+
+```{r}
+# récupération des index des variables numériques
+numericVars <- which(sapply(all_tmp, is.numeric))
+numericVarNames <- names(numericVars)
+# affichage pour vérification
+print(numericVarNames)
+```
+
+
+```{r}
+# récupération d'un dataframe avec uniquement les variables numériques
+DFnumeric <- all_tmp[, names(all_tmp) %in% numericVarNames]
+# on met de coté la target
+DFtarget = subset(DFnumeric, select=c(SalePrice))
+# on retire la target
+DFnumeric = subset(DFnumeric, select=-c(SalePrice))
+# récupération d'un df avec toutes les variables non numériques
+DFfactors <- all_tmp[, !(names(all_tmp) %in% numericVarNames)]
+# vérification des dimensions
+dim(DFnumeric)
+dim(DFtarget)
+dim(DFfactors)
+```
+
+####A11 Etape 2 : Scaling
+```{r}
+PreNum <- preProcess(DFnumeric, method=c("center", "scale"))
+print(PreNum)
+```
+
+```{r}
+DFnorm <- predict(PreNum, DFnumeric)
+dim(DFnorm)
+```
+
+#### A noter qu'en procédant ainsi il y a une fuite de forme lors du scale, il aurait fallu faire un fit_transform sur le train et un simple transform sur le test, opération qui a échouée 
+```{r}
+# one hot encoding de toutes les variables qualitatives
+DFdummies <- as.data.frame(model.matrix(~.-1, DFfactors))
+```
+
+```{r}
+# fusion de tous les dataframes avec les différents prédicateurs pour reformer le jeu de donnée initial
+all_tmp <- cbind(DFnorm, DFdummies, DFtarget) 
+dim(all_tmp)
+```
+```{r}
+# on split à nouveau le train et le test en conservant les dimensions 
+# prévues initialement
+train_ = all_tmp[0:1084, ]
+testt_ = all_tmp[1085:1449, ]
+```
+
+On voit que toutes les colonnes sont bien présentes: 
+- catégoriques one hot encoded (avec des O ou 1), 
+- les numériques scalées
+- et la target inchangée
+
+```{r}
+head(train_[,c(33:40, 182)])
+```
+
+```{r}
+dim(train_)
+dim(testt_)
+train_b_ = subset(train_, select=-c(SalePrice))
+testt_b_ = subset(testt_, select=-c(SalePrice))
+dim(train_b_)
+dim(testt_b_)
+```
+
+```{r}
+model_scale = lm(log(train_$SalePrice)~., data=train_b_)
+#summary(model_scale)
+```
+
+Mais les résultats sont inchangés par rapport au meme modèle non scalé...
+
+```{r}
+y_train_pred = (predict(model_scale, newdata=train_b_))
+y_testt_pred = (predict(model_scale, newdata=testt_b_))
+
+RMSE_train = c(sqrt(mean((exp(y_train_pred)-train_$SalePrice)^2)))
+RMSE_testt = c(sqrt(mean((exp(y_testt_pred)-testt_$SalePrice)^2)))
+
+print("RMSE sur le dataset de train:"); print(RMSE_train, digits=5)
+print("RMSE sur le dataset de test:"); print(RMSE_testt, digits=5)
+```
+
+
+###Annexe 12 Approche mixte en sélection les variables sur la base des évaluations d'un summary et de la transformation de variables
+```{r}
+# suppression des colonnes
+train3 = subset(train)
+test3 = subset(testt)
+
+```
+
+
+## 2. selection de features par randomforest
+
+Essai 1 avec la variable Neighborhood qui a une forte corrélation avec la target -> rassemblons les modes en 3 valeurs ordinales:
+```{r}
+train3$NeighRich[train3$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+test3$NeighRich[test3$Neighborhood %in% c('StoneBr', 'NridgHt', 'NoRidge')] <- 2
+
+train3$NeighRich[!train3$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+test3$NeighRich[!test3$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale', 'StoneBr', 'NridgHt', 'NoRidge')] <- 1
+
+train3$NeighRich[train3$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+test3$NeighRich[test3$Neighborhood %in% c('MeadowV', 'IDOTRR', 'BrDale')] <- 0
+
+train3 = (subset(train3, select=-c(Neighborhood)))
+test3 = (subset(test3, select=-c(Neighborhood)))
+```
+
+
+```{r}
+# creation de la nouvelle variable
+train3$Area <- train3$GrLivArea + train3$TotalBsmtSF
+test3$Area <- test3$GrLivArea + test3$TotalBsmtSF
+
+# suppression des anciennes
+train3 = (subset(train3, select=-c(GrLivArea, TotalBsmtSF)))
+test3 = (subset(test3, select=-c(GrLivArea, TotalBsmtSF)))
+```
+
+
+```{r}
+options(repr.plot.width = 10, repr.plot.height = 6)
+rf = randomForest(train3$SalePrice~ .,data=train3)
+varImpPlot(rf)
+```
+
+
+```{r}
+rf$importance[order(rf$importance[, 1], decreasing = TRUE), ]
+```
+
+
+
+Sélection des variables les plus importantes pour le Random Forest 
+```{r}
+train3d = (subset(train3,select=c(Area,OverallQual,GarageCars,NeighRich,YearBuilt,ExterQual,X1stFlrSF,GarageArea,X2ndFlrSF,BsmtFinSF1,LotArea,FullBath,YearRemodAdd,KitchenQual,GarageFinish,BsmtQual,GarageYrBlt,TotRmsAbvGrd,LotFrontage,BsmtUnfSF,Fireplaces,MasVnrArea,OpenPorchSF,PoolArea,OverallCond,WoodDeckSF,MoSold,BedroomAbvGr,SaleCondition,LandContour,GarageType,MSSubClass,BsmtExposure,BsmtFinType1,YrSold,KitchenAbvGr,BsmtFullBath,MSZoning,LotShape,HalfBath,SaleType,HouseStyle,RoofStyle,LandSlope,CentralAir,Foundation,MasVnrType,HeatingQC,LotConfig,EnclosedPorch,Condition1,BldgType,ScreenPorch,Functional,ExterCond,BsmtFinSF2,BsmtFinType2,X3SsnPorch,BsmtCond,PavedDrive,LowQualFinSF,MiscVal,BsmtHalfBath,GarageQual,GarageCond,Street,Utilities,SalePrice)))
+test3d = (subset(test3,select=c(Area,OverallQual,GarageCars,NeighRich,YearBuilt,ExterQual,X1stFlrSF,GarageArea,X2ndFlrSF,BsmtFinSF1,LotArea,FullBath,YearRemodAdd,KitchenQual,GarageFinish,BsmtQual,GarageYrBlt,TotRmsAbvGrd,LotFrontage,BsmtUnfSF,Fireplaces,MasVnrArea,OpenPorchSF,PoolArea,OverallCond,WoodDeckSF,MoSold,BedroomAbvGr,SaleCondition,LandContour,GarageType,MSSubClass,BsmtExposure,BsmtFinType1,YrSold,KitchenAbvGr,BsmtFullBath,MSZoning,LotShape,HalfBath,SaleType,HouseStyle,RoofStyle,LandSlope,CentralAir,Foundation,MasVnrType,HeatingQC,LotConfig,EnclosedPorch,Condition1,BldgType,ScreenPorch,Functional,ExterCond,BsmtFinSF2,BsmtFinType2,X3SsnPorch,BsmtCond,PavedDrive,LowQualFinSF,MiscVal,BsmtHalfBath,GarageQual,GarageCond,Street,Utilities,SalePrice)))
+```
+
+
+```{r}
+model_rf= lm(log(SalePrice)~., data=train3d)
+```
+
+```{r}
+summary(model_rf)
+```
+
+
+```{r}
+train3e=train3d[,-c(1,5,6,7,8,9,10,12,13,15,17,18,20,22,23,24,27,28,31,32,33,35,36,41,42,43,44,45,47,49,50,52,54,55,56,58,59,60,61,62,63,64,65)]
+```
+
+```{r}
+str(train3e)
+```
+
+
+
+```{r}
+model_rfe= lm(log(train3e$SalePrice)~., data=train3e)
+```
+
+```{r}
+summary(model_rfe)
+```
+
+
+
+### Suppression des outliers et des points anormaux identifiés lors des études exploiratoires
+```{r}
+outlierTest(model_rfe)
+```
+
+
+```{r}
+# Points anormaux identifiés lors de l'analyse exploratoire
+#train3d = subset(train3d, GrLivArea < 4000)
+#train3f = subset(train3e, GarageArea < 1250)
+#train3d = subset(train3d, TotalBsmtSF < 4000)
+#train3f = subset(train3e, X1stFlrSF < 4500)
+# outliers issue de bonferonni
+train3f = train3e[-c(720,819,743,814),]
+```
+
+
+```{r}
+model_rfe_sansoutliers= lm(log(SalePrice)~., data=train3f)
+```
+
+```{r}
+outlierTest(model_rfe_sansoutliers)
+```
+
+
+```{r}
+# outliers issue de bonferonni
+train3g = train3f[-c(1079),]
+```
+
+```{r}
+model_rfe_sansoutliersb= lm(log(SalePrice)~., data=train3g)
+```
+
+```{r}
+summary(model_rfe_sansoutliersb)
+```
+
+
+
+```{r}
+AIC=c(extractAIC(model_rf)[2],extractAIC(model_rfe_sansoutliers)[2],extractAIC(model_rfe_sansoutliersb)[2])
+names(AIC)=c('modRFbase','modFR_outliers1','modFR_outliers2')
+AIC
+```
+
+```{r}
+#modèle de base sans la 1iere série outliers 
+y_Tp_MRFd2 = (predict(model_rf, newdata=train3d))
+y_tp_MRFd2 = (predict(model_rf, newdata=test3d))
+YTMFd2=exp(y_Tp_MRFd2)
+YtMFd2=exp(y_tp_MRFd2)
+RMSE_T_MRFd2 = c(sqrt(mean((train3d$SalePrice-YTMFd2)^2)))
+RMSE_t_MRFd2 = c(sqrt(mean((test3d$SalePrice-YtMFd2)^2)))
+```
+
+
+
+Comparaison des erreurs par rapport à la moyenne: le meilleur des trois modèles est celui limité à la 1ier serie de retrait d'outliers
+```{r}
+print("RMSE RF sans outliers 1 train:"); print(RMSE_T_MRFd2, digits=5)
+print("RMSE RF sans outliers 1 train:"); print(RMSE_t_MRFd2, digits=5)
+summary(train$SalePrice)
+27049/180934
+```
+
+### Analyse de la validé du modèle issu du RF sans outliers: 
+
+[P1] n'est pas validée car (cf. 1er plot Residuals vs Fitted):
+- Quelques résidus fortement dispersés
+- Et La ligne rouge qui devie
+```{r}
+options(repr.plot.width = 4, repr.plot.height = 4)
+plot(model_rfe_sansoutliersb,1)
+```
+
+[P2] est pas validée car (cf. 3ème plot Scale-Location), la valeur de P-value étant >0,05
+```{r}
+# test P2 non validé
+ncvTest(model_rfe_sansoutliersb)
+```
+
+[P3] est validée car tous les traits verticaux (cf. ci-dessous "Plot Auto-corrélation), sauf le premier, ne dépasse pas les seuils en pointillés / P-value est > 0,05
+```{r}
+
+#ici P value > 0,05 P3 validée !
+durbinWatsonTest(model_rfe_sansoutliersb)
+```
+
+
+[P4]  Test de Shapiro: ici p-value = 2.2e-16 << 0.05 donc__[P4] n'est pas validée ! les erreurs ne sont pas gaussiennes
+```{r}
+shapiro.test(residuals(model_rfe_sansoutliersb))
+```
+
+Evaluation des distances de Cook fait resortir 1 point hors limite. 
+```{r}
+plot(model_rfe_sansoutliersb,5)
+```
+
+
+
+###Annexe 13 description des différentes variables prédictives
+
+
+- SalePrice - the property's sale price in dollars. This is the target variable that you're trying to predict.
+- MSSubClass: The building class
+- MSZoning: The general zoning classification
+- LotFrontage: Linear feet of street connected to property
+- LotArea: Lot size in square feet
+- Street: Type of road access
+- Alley: Type of alley access
+- LotShape: General shape of property
+- LandContour: Flatness of the property
+- Utilities: Type of utilities available
+- LotConfig: Lot configuration
+- LandSlope: Slope of property
+- Neighborhood: Physical locations within Ames city limits
+- Condition1: Proximity to main road or railroad
+- Condition2: Proximity to main road or railroad (if a second is present)
+- BldgType: Type of dwelling
+- HouseStyle: Style of dwelling
+- OverallQual: Overall material and finish quality
+- OverallCond: Overall condition rating
+- YearBuilt: Original construction date
+- YearRemodAdd: Remodel date
+- RoofStyle: Type of roof
+- RoofMatl: Roof material
+- Exterior1st: Exterior covering on house
+- Exterior2nd: Exterior covering on house (if more than one material)
+- MasVnrType: Masonry veneer type
+- MasVnrArea: Masonry veneer area in square feet
+- ExterQual: Exterior material quality
+- ExterCond: Present condition of the material on the exterior
+- Foundation: Type of foundation
+- BsmtQual: Height of the basement
+- BsmtCond: General condition of the basement
+- BsmtExposure: Walkout or garden level basement walls
+- BsmtFinType1: Quality of basement finished area
+- BsmtFinSF1: Type 1 finished square feet
+- BsmtFinType2: Quality of second finished area (if present)
+- BsmtFinSF2: Type 2 finished square feet
+- BsmtUnfSF: Unfinished square feet of basement area
+- TotalBsmtSF: Total square feet of basement area
+- Heating: Type of heating
+- HeatingQC: Heating quality and condition
+- CentralAir: Central air conditioning
+- Electrical: Electrical system
+- 1stFlrSF: First Floor square feet
+- 2ndFlrSF: Second floor square feet
+- LowQualFinSF: Low quality finished square feet (all floors)
+- GrLivArea: Above grade (ground) living area square feet
+- BsmtFullBath: Basement full bathrooms
+- BsmtHalfBath: Basement half bathrooms
+- FullBath: Full bathrooms above grade
+- HalfBath: Half baths above grade
+- Bedroom: Number of bedrooms above basement level
+- Kitchen: Number of kitchens
+- KitchenQual: Kitchen quality
+- TotRmsAbvGrd: Total rooms above grade (does not include bathrooms)
+- Functional: Home functionality rating
+- Fireplaces: Number of fireplaces
+- FireplaceQu: Fireplace quality
+- GarageType: Garage location
+- GarageYrBlt: Year garage was built
+- GarageFinish: Interior finish of the garage
+- GarageCars: Size of garage in car capacity
+- GarageArea: Size of garage in square feet
+- GarageQual: Garage quality
+- GarageCond: Garage condition
+- PavedDrive: Paved driveway
+- WoodDeckSF: Wood deck area in square feet
+- OpenPorchSF: Open porch area in square feet
+- EnclosedPorch: Enclosed porch area in square feet
+- 3SsnPorch: Three season porch area in square feet
+- ScreenPorch: Screen porch area in square feet
+- PoolArea: Pool area in square feet
+- PoolQC: Pool quality
+- Fence: Fence quality
+- MiscFeature: Miscellaneous feature not covered in other categories
+- MiscVal: $Value of miscellaneous feature
+- MoSold: Month Sold
+- YrSold: Year Sold
+- SaleType: Type of sale
+- SaleCondition: Condition of sale
+
+
+
+
+
+
+
